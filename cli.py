@@ -3887,6 +3887,11 @@ class HermesCLI:
         """
         from tools.process_registry import process_registry
 
+        # Interrupt the foreground agent turn first, so /stop works even
+        # when no background processes are running (mirrors OpenAI Codex UX).
+        if hasattr(self, "agent") and getattr(self.agent, "_interrupt_requested", False) is False:
+            self.agent.interrupt()
+
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
 

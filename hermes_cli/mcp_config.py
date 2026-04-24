@@ -165,14 +165,7 @@ def _probe_single_server(
     Returns list of ``(tool_name, description)`` tuples.
     Raises on connection failure.
     """
-    from tools.mcp_tool import (
-        _ensure_mcp_loop,
-        _run_on_mcp_loop,
-        _connect_server,
-        _stop_mcp_loop,
-    )
-
-    _ensure_mcp_loop()
+    from tools.mcp_tool import _connect_server
 
     tools_found: List[Tuple[str, str]] = []
 
@@ -189,11 +182,13 @@ def _probe_single_server(
         await server.shutdown()
 
     try:
-        _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
+        # Use a dedicated local event loop for one-shot CLI probes. Reusing the
+        # shared MCP background loop here can hang on teardown even though the
+        # transport itself is healthy, because the probe does not need a
+        # long-lived shared registry or reconnect lifecycle.
+        asyncio.run(_probe())
     except BaseException as exc:
         raise _unwrap_exception_group(exc) from None
-    finally:
-        _stop_mcp_loop()
 
     return tools_found
 
