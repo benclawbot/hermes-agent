@@ -76,8 +76,8 @@ try:
     install_shift_enter_alias()
     install_ctrl_enter_alias()
     del install_shift_enter_alias, install_ctrl_enter_alias
-except Exception:
-    pass
+except Exception as _err:
+    logger.debug("pt_input_extras unavailable (optional): %s", _err)
 import threading
 import queue
 
@@ -532,9 +532,20 @@ def load_cli_config() -> Dict[str, Any]:
         "sudo_password": "SUDO_PASSWORD",
     }
     
-    # Bridge config → env vars for terminal_tool. TERMINAL_CWD is force-exported
-    # UNLESS we're inside a gateway process (detected by _HERMES_GATEWAY marker)
-    # where it was already set correctly by gateway/run.py's config bridge.
+    # Bridge config → env vars for terminal_tool.
+    #
+    # Precedence order:
+    #   1. .env sets baseline environment variables
+    #   2. Config file overrides .env when terminal config is present AND key exists in config
+    #   3. If config file has no terminal section, .env values are preserved
+    #   4. If config file has terminal section but a specific key is absent, .env is preserved
+    #
+    # This means: config only overrides when it explicitly defines terminal config.
+    # Otherwise .env values (including TERMINAL_CWD) are preserved.
+    #
+    # TERMINAL_CWD is force-exported (CLI mode) unless we're inside a gateway process
+    # (detected by _HERMES_GATEWAY marker) where it was already set correctly by
+    # gateway/run.py's config bridge.
     _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
     for config_key, env_var in env_mappings.items():
         if config_key in terminal_config:
@@ -614,6 +625,51 @@ def load_cli_config() -> Dict[str, Any]:
         if redact is not None:
             os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
 
+    def _validate_numeric_types(cfg: Dict[str, Any]) -> None:
+        type_rules = [
+            (("terminal", "timeout"), (int, float)),
+            (("terminal", "lifetime_seconds"), (int, float)),
+            (("terminal", "docker_volumes"), list),
+            (("browser", "inactivity_timeout"), (int, float)),
+            (("clarify", "timeout"), (int, float)),
+            (("code_execution", "timeout"), (int, float)),
+            (("code_execution", "max_tool_calls"), int),
+        ]
+        for path, expected in type_rules:
+            value = cfg
+            for key in path:
+                if isinstance(value, dict):
+                    value = value.get(key)
+                else:
+                    value = None
+                    break
+            if value is None:
+                continue
+            if isinstance(expected, tuple):
+                if not isinstance(value, expected):
+                    corrected = type(value)(value) if not isinstance(value, bool) else int(value)
+                    logger.warning(
+                        "Config type mismatch at %s: expected %s, got %s (%s) — correcting to %s",
+                        ".".join(path), expected, type(value).__name__, value, corrected
+                    )
+                    target = cfg
+                    for key in path[:-1]:
+                        target = target[key]
+                    target[path[-1]] = corrected
+            else:
+                if not isinstance(value, expected):
+                    corrected = type(value)(value) if not isinstance(value, bool) else int(value)
+                    logger.warning(
+                        "Config type mismatch at %s: expected %s, got %s (%s) — correcting to %s",
+                        ".".join(path), expected.__name__, type(value).__name__, value, corrected
+                    )
+                    target = cfg
+                    for key in path[:-1]:
+                        target = target[key]
+                    target[path[-1]] = corrected
+
+    _validate_numeric_types(defaults)
+
     return defaults
 
 # Load configuration at module startup
@@ -625,30 +681,30 @@ CLI_CONFIG = load_cli_config()
 try:
     from hermes_logging import setup_logging
     setup_logging(mode="cli")
-except Exception:
-    pass  # Logging setup is best-effort — don't crash the CLI
+except Exception as _err:
+    logger.debug("Logging setup failed (best-effort): %s", _err)
 
 # Validate config structure early — print warnings before user hits cryptic errors
 try:
     from hermes_cli.config import print_config_warnings
     print_config_warnings()
-except Exception:
-    pass
+except Exception as _err:
+    logger.debug("Config warnings unavailable: %s", _err)
 
 # Initialize the skin engine from config
 try:
     from hermes_cli.skin_engine import init_skin_from_config
     init_skin_from_config(CLI_CONFIG)
-except Exception:
-    pass  # Skin engine is optional — default skin used if unavailable
+except Exception as _err:
+    logger.debug("Skin engine init failed (optional): %s", _err)
 
 # Initialize tool preview length from config
 try:
     from agent.display import set_tool_preview_max_len
     _tpl = CLI_CONFIG.get("display", {}).get("tool_preview_length", 0)
     set_tool_preview_max_len(int(_tpl) if _tpl else 0)
-except Exception:
-    pass
+except Exception as _err:
+    logger.debug("Tool preview length init failed (optional): %s", _err)
 
 # Neuter AsyncHttpxClientWrapper.__del__ before any AsyncOpenAI clients are
 # created.  The SDK's __del__ schedules aclose() on asyncio.get_running_loop()
@@ -658,8 +714,8 @@ except Exception:
 try:
     from agent.auxiliary_client import neuter_async_httpx_del
     neuter_async_httpx_del()
-except Exception:
-    pass
+except Exception as _err:
+    logger.debug("AsyncHttpx del neuter failed (optional): %s", _err)
 
 from rich import box as rich_box
 from rich.console import Console
@@ -702,32 +758,32 @@ def _run_cleanup():
 
     try:
         _cleanup_all_terminals()
-    except Exception:
-        pass
+    except Exception as _err:
+        logger.debug("Terminal cleanup failed: %s", _err)
     try:
         _cleanup_all_browsers()
-    except Exception:
-        pass
+    except Exception as _err:
+        logger.debug("Browser cleanup failed: %s", _err)
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
-    except Exception:
-        pass
+    except Exception as _err:
+        logger.debug("MCP server shutdown failed: %s", _err)
     # Close cached auxiliary LLM clients (sync + async) so that
     # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
     # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
     try:
         from agent.auxiliary_client import shutdown_cached_clients
         shutdown_cached_clients()
-    except Exception:
-        pass
+    except Exception as _err:
+        logger.debug("Auxiliary client shutdown failed: %s", _err)
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
-    except Exception:
-        pass
+    except Exception as _err:
+        logger.debug("Session finalize hook failed: %s", _err)
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
             # Forward the agent's own transcript so memory providers'
@@ -741,8 +797,8 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
-    except Exception:
-        pass
+    except Exception as _err:
+        logger.debug("Memory provider shutdown failed: %s", _err)
 
 
 # =============================================================================
@@ -1114,7 +1170,8 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             mtime = entry.stat().st_mtime
             if mtime > soft_cutoff:
                 continue  # Too recent — skip
-        except Exception:
+        except Exception as _err:
+            logger.debug("Worktree mtime check failed for %s: %s", entry.name, _err)
             continue
 
         force = mtime <= hard_cutoff  # Over 72h — force remove
@@ -1128,8 +1185,9 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
                 )
                 if result.stdout.strip():
                     continue  # Has unpushed commits — skip
-            except Exception:
-                continue  # Can't check — skip
+            except Exception as _err:
+                logger.debug("Worktree unpushed check failed for %s: %s", entry.name, _err)
+                continue
 
         # Safe to remove
         try:
@@ -2198,11 +2256,9 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
 
 def save_config_value(key_path: str, value: any) -> bool:
     """
-    Save a value to the active config file at the specified key path.
+    Save a value to the user config file at the specified key path.
     
-    Respects the same lookup order as load_cli_config():
-    1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
-    2. ./cli-config.yaml (project config - fallback)
+    Always writes to ~/.hermes/config.yaml (creating it if necessary).
     
     Args:
         key_path: Dot-separated path like "agent.system_prompt"
@@ -2212,6 +2268,7 @@ def save_config_value(key_path: str, value: any) -> bool:
         True if successful, False otherwise
     """
     # Always write to user config; create it if it doesn't exist
+    user_config_path = _hermes_home / 'config.yaml'
     config_path = user_config_path
     if not config_path.exists():
         config_path.parent.mkdir(parents=True, exist_ok=True)

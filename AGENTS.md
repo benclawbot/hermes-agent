@@ -892,6 +892,30 @@ def profile_env(tmp_path, monkeypatch):
     return home
 ```
 
+### `_run_async()` hard timeout and thread lifecycle
+`_run_async()` in `model_tools.py` has a hard-coded 300-second timeout
+(`_ASYNC_TOOL_TIMEOUT`). When a tool call hits this limit:
+
+1. The future is cancelled via `concurrent.futures.Future.cancel()` — but
+   this is only effective on not-yet-started tasks; a running worker
+   thread ignores it.
+2. The worker loop is signalled to cancel all tasks via
+   `worker_loop.call_soon_threadsafe(t.cancel)` — this is **advisory
+   only**; the task must still hit an `await` point to observe the
+   cancellation.
+3. `pool.shutdown(wait=False)` is called immediately, releasing the
+   executor without blocking.
+
+**What this means for long-running tool calls:** If your async tool
+doesn't have internal await points (or hits a blocking sync call before
+the next await), the cancellation request may never be delivered and
+the thread may outlive the timeout. For tool calls that should run
+beyond 300 seconds (e.g., large file downloads, extensive web scraping,
+model fine-tuning), the timeout cannot be configured — the constant
+lives in `model_tools.py:35`. Design long-running work to checkpoint
+or yield frequently, or offload it to a `terminal(background=True)`
+process that survives the agent turn.
+
 ---
 
 ## Testing

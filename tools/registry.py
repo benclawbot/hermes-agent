@@ -155,9 +155,13 @@ class ToolRegistry:
         self._tools: Dict[str, ToolEntry] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
-        # MCP dynamic refresh can mutate the registry while other threads are
-        # reading tool metadata, so keep mutations serialized and readers on
-        # stable snapshots.
+        # Thread safety: MCP dynamic refresh can mutate the registry while other
+        # threads are reading tool metadata. All mutations (register, deregister,
+        # register_toolset_alias) acquire _lock. All read operations use
+        # _snapshot_*() helpers which acquire _lock and return a stable copy,
+        # so callers get a consistent view without holding the lock.
+        # _lock is a reentrant lock so the same thread can re-acquire it
+        # recursively (e.g. a check_fn that calls back into the registry).
         self._lock = threading.RLock()
         # Monotonically-increasing generation counter. Bumped on every
         # mutation (register / deregister / register_toolset_alias / MCP
@@ -206,7 +210,19 @@ class ToolRegistry:
         )
 
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
-        """Register an explicit alias for a canonical toolset name."""
+        """Register an explicit alias for a canonical toolset name.
+
+        Args:
+            alias: The alias name to register. Must be a non-empty string.
+            toolset: The canonical toolset name. Must be a non-empty string.
+
+        Raises:
+            ValueError: If alias or toolset is None or empty.
+        """
+        if not alias:
+            raise ValueError("alias must be a non-empty string")
+        if not toolset:
+            raise ValueError("toolset must be a non-empty string")
         with self._lock:
             existing = self._toolset_aliases.get(alias)
             if existing and existing != toolset:
@@ -290,13 +306,19 @@ class ToolRegistry:
     def deregister(self, name: str) -> None:
         """Remove a tool from the registry.
 
-        Also cleans up the toolset check if no other tools remain in the
-        same toolset.  Used by MCP dynamic tool discovery to nuke-and-repave
-        when a server sends ``notifications/tools/list_changed``.
+        Also cleans up the toolset check and toolset aliases if no other tools
+        remain in the same toolset.  Used by MCP dynamic tool discovery to
+        nuke-and-repave when a server sends ``notifications/tools/list_changed``.
         """
         with self._lock:
             entry = self._tools.pop(name, None)
             if entry is None:
+                return
+            # Guard against None toolset (shouldn't happen but prevents
+            # all-aliases-kept bug if it does)
+            if entry.toolset is None:
+                logger.warning("Deregistering tool '%s' with None toolset", name)
+                self._generation += 1
                 return
             # Drop the toolset check and aliases if this was the last tool in
             # that toolset.
@@ -305,6 +327,7 @@ class ToolRegistry:
             )
             if not toolset_still_exists:
                 self._toolset_checks.pop(entry.toolset, None)
+                # Remove any aliases that pointed to the departing toolset
                 self._toolset_aliases = {
                     alias: target
                     for alias, target in self._toolset_aliases.items()

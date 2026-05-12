@@ -32,6 +32,8 @@ from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
+_ASYNC_TOOL_TIMEOUT = 300  # seconds
+
 
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
@@ -100,6 +102,9 @@ def _run_async(coro):
     handlers. The RL paths (agent_loop.py, tool_context.py) also provide
     outer thread-pool wrapping as defense-in-depth, but each handler is
     self-protecting via this function.
+
+    The timeout for async tool execution is configurable via the
+    ``_ASYNC_TOOL_TIMEOUT`` module-level constant (default 300 seconds).
     """
     try:
         loop = asyncio.get_running_loop()
@@ -142,7 +147,7 @@ def _run_async(coro):
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = pool.submit(_run_in_worker)
         try:
-            return future.result(timeout=300)
+            return future.result(timeout=_ASYNC_TOOL_TIMEOUT)
         except concurrent.futures.TimeoutError:
             # Cancel the coroutine inside its own loop so the worker thread
             # can wind down instead of running forever.

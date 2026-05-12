@@ -4042,15 +4042,25 @@ def read_raw_config() -> Dict[str, Any]:
     with _CONFIG_LOCK:
         try:
             config_path = get_config_path()
-            st = config_path.stat()
-            cache_key = (st.st_mtime_ns, st.st_size)
+            pre_read_st = config_path.stat()
         except (FileNotFoundError, OSError):
             return {}
 
         path_key = str(config_path)
         cached = _RAW_CONFIG_CACHE.get(path_key)
-        if cached is not None and cached[:2] == cache_key:
-            return copy.deepcopy(cached[2])
+        if cached is not None and cached[:2] == (pre_read_st.st_mtime_ns, pre_read_st.st_size):
+            # Re-stat after reading to ensure file wasn't modified during the read.
+            # If the file changed between pre-read stat and now, don't use cache.
+            try:
+                post_read_st = config_path.stat()
+                if post_read_st.st_mtime_ns != pre_read_st.st_mtime_ns or post_read_st.st_size != pre_read_st.st_size:
+                    # File was modified during read — cache is stale, proceed normally
+                    cached = None
+                else:
+                    return copy.deepcopy(cached[2])
+            except OSError:
+                # File deleted/unavailable after read — don't use cache
+                cached = None
 
         try:
             with open(config_path, encoding="utf-8") as f:
@@ -4061,6 +4071,14 @@ def read_raw_config() -> Dict[str, Any]:
 
         if not isinstance(data, dict):
             data = {}
+
+        # Re-stat to get final mtime/size for cache storage
+        try:
+            final_st = config_path.stat()
+            cache_key = (final_st.st_mtime_ns, final_st.st_size)
+        except OSError:
+            cache_key = (pre_read_st.st_mtime_ns, pre_read_st.st_size)
+
         _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
         return data
 
@@ -4081,18 +4099,27 @@ def load_config() -> Dict[str, Any]:
         path_key = str(config_path)
 
         try:
-            st = config_path.stat()
-            cache_key: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+            pre_read_st = config_path.stat()
         except FileNotFoundError:
-            cache_key = None
+            pre_read_st = None
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_key is not None and cached[:2] == cache_key:
-            return copy.deepcopy(cached[2])
+        cache_hit = False
+        if cached is not None and pre_read_st is not None:
+            if cached[:2] == (pre_read_st.st_mtime_ns, pre_read_st.st_size):
+                # Potential cache hit — re-stat after reading to rule out
+                # concurrent modification between stat and open
+                try:
+                    post_read_st = config_path.stat()
+                    if post_read_st.st_mtime_ns == pre_read_st.st_mtime_ns and post_read_st.st_size == pre_read_st.st_size:
+                        return copy.deepcopy(cached[2])
+                except OSError:
+                    pass
+                # File changed during read — fall through to load fresh
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
-        if cache_key is not None:
+        if pre_read_st is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
@@ -4111,6 +4138,16 @@ def load_config() -> Dict[str, Any]:
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+
+        # Re-stat for final cache key
+        cache_key: Optional[Tuple[int, int]] = None
+        try:
+            final_st = config_path.stat()
+            cache_key = (final_st.st_mtime_ns, final_st.st_size)
+        except OSError:
+            if pre_read_st is not None:
+                cache_key = (pre_read_st.st_mtime_ns, pre_read_st.st_size)
+
         if cache_key is not None:
             _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(expanded))
         else:

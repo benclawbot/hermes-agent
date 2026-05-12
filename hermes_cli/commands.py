@@ -209,6 +209,34 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, aliases=("exit",)),
 ]
 
+_VALID_CATEGORIES = frozenset({"Session", "Configuration", "Tools & Skills", "Info", "Exit"})
+
+
+def _validate_command_def(cmd: CommandDef) -> list[str]:
+    """Validate a CommandDef entry and return list of warning messages."""
+    warnings: list[str] = []
+    if cmd.category not in _VALID_CATEGORIES:
+        warnings.append(
+            f"CommandDef({cmd.name!r}): category {cmd.category!r} is not valid; "
+            f"expected one of {_VALID_CATEGORIES}"
+        )
+    if cmd.gateway_config_gate is not None:
+        if not cmd.gateway_config_gate:
+            warnings.append(
+                f"CommandDef({cmd.name!r}): gateway_config_gate is set but is empty"
+            )
+        elif "." not in cmd.gateway_config_gate:
+            warnings.append(
+                f"CommandDef({cmd.name!r}): gateway_config_gate {cmd.gateway_config_gate!r} "
+                f"does not look like a dot-path (missing '.')"
+            )
+    return warnings
+
+
+for _cmd in COMMAND_REGISTRY:
+    for _warning in _validate_command_def(_cmd):
+        logger.warning(_warning)
+
 
 # ---------------------------------------------------------------------------
 # Derived lookups -- rebuilt once at import time, refreshed by rebuild_lookups()
