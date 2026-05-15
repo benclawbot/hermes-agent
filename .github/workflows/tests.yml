@@ -53,6 +53,21 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
+      - name: Run startup benchmark (warn-only, 3 runs)
+        # Optional early-warning check — does not fail the build, only emits a warning.
+        # Runs on the installed dev environment so is faster than the release-gated job.
+        run: |
+          source .venv/bin/activate
+          set +e
+          python3 scripts/bench_startup.py --check --runs 3
+          exit_code=$?
+          if [ $exit_code -ne 0 ]; then
+            echo "::warning::Startup budget exceeded — review HERMES_STARTUP_BUDGET_MS / HERMES_STARTUP_P95_BUDGET_MS"
+          fi
+          set -e
+        env:
+          HERMES_STARTUP_TIMEOUT_S: "30"
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -80,3 +95,36 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+  startup-benchmark:
+    # Runs the startup benchmark as a required CI gate on main/PR merges.
+    # Budget thresholds can be overridden via environment variables:
+    #   HERMES_STARTUP_BUDGET_MS     – max allowed median startup (ms, default: 2000)
+    #   HERMES_STARTUP_P95_BUDGET_MS  – max allowed p95 startup (ms, default: 5000)
+    #   HERMES_STARTUP_TIMEOUT_S      – per-run timeout (s, default: 30)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install hermes-agent (release build)
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install -e ".[all]"
+
+      - name: Run startup benchmark (strict check, 5 runs)
+        run: python3 scripts/bench_startup.py --check --runs 5
+        env:
+          # Override budgets in CI if needed:
+          # HERMES_STARTUP_BUDGET_MS: "2000"
+          # HERMES_STARTUP_P95_BUDGET_MS: "5000"
+          # HERMES_STARTUP_TIMEOUT_S: "30"
+          HERMES_STARTUP_TIMEOUT_S: "30"
