@@ -5047,8 +5047,12 @@ class HermesCLI:
                         tools_str += f", +{len(item['tools'])-2} more"
                     self._console_print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(item['missing_vars'])})[/]")
                 self._console_print("[dim]   Run 'hermes setup' to configure[/]")
-        except Exception:
-            pass  # Don't crash on import errors
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Tool availability check failed (some tools may be unavailable): %s",
+                e, exc_info=True,
+            )
     
     def _show_status(self):
         """Show compact startup status line."""

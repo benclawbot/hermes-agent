@@ -16,10 +16,21 @@ def _hermes_home_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
-def build_write_denied_paths(home: str) -> set[str]:
-    """Return exact sensitive paths that must never be written."""
+# Module-level cache for write-denied sets.  Refreshed whenever the
+# HERMES_HOME environment changes (at eval boundary — tools don't change
+# HERMES_HOME mid-session so this is safe for the lifetime of a process).
+_write_denied_cache: Optional[dict] = None
+
+
+def _get_write_denied_cached() -> tuple[set[str], list[str]]:
+    """Return (denied_paths, denied_prefixes) with module-level caching."""
+    global _write_denied_cache
+    home = os.path.realpath(os.path.expanduser("~"))
     hermes_home = _hermes_home_path()
-    return {
+    cache_key = (home, str(hermes_home))
+    if _write_denied_cache is not None and _write_denied_cache.get("_key") == cache_key:
+        return _write_denied_cache["_value"]  # type: ignore[return-value]
+    denied_paths = {
         os.path.realpath(p)
         for p in [
             os.path.join(home, ".ssh", "authorized_keys"),
@@ -41,11 +52,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             "/etc/shadow",
         ]
     }
-
-
-def build_write_denied_prefixes(home: str) -> list[str]:
-    """Return sensitive directory prefixes that must never be written."""
-    return [
+    denied_prefixes = [
         os.path.realpath(p) + os.sep
         for p in [
             os.path.join(home, ".ssh"),
@@ -59,6 +66,18 @@ def build_write_denied_prefixes(home: str) -> list[str]:
             os.path.join(home, ".config", "gh"),
         ]
     ]
+    _write_denied_cache = {"_key": cache_key, "_value": (denied_paths, denied_prefixes)}
+    return denied_paths, denied_prefixes
+
+
+def build_write_denied_paths(home: str) -> set[str]:
+    """Return exact sensitive paths that must never be written."""
+    return _get_write_denied_cached()[0]
+
+
+def build_write_denied_prefixes(home: str) -> list[str]:
+    """Return sensitive directory prefixes that must never be written."""
+    return _get_write_denied_cached()[1]
 
 
 def get_safe_write_root() -> Optional[str]:

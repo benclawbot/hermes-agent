@@ -21,6 +21,7 @@ Public API (signatures preserved from the original 2,400-line version):
 """
 
 import json
+import os
 import asyncio
 import logging
 import threading
@@ -32,7 +33,7 @@ from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
-_ASYNC_TOOL_TIMEOUT = 300  # seconds
+_ASYNC_TOOL_TIMEOUT = int(os.environ.get("HERMES_ASYNC_TOOL_TIMEOUT", 300))  # seconds
 
 
 # =============================================================================
@@ -147,7 +148,7 @@ def _run_async(coro):
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = pool.submit(_run_in_worker)
         try:
-            return future.result(timeout=_ASYNC_TOOL_TIMEOUT)
+            return future.result(timeout=300)
         except concurrent.futures.TimeoutError:
             # Cancel the coroutine inside its own loop so the worker thread
             # can wind down instead of running forever.

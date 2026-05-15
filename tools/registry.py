@@ -132,13 +132,14 @@ def _check_fn_cached(fn: Callable) -> bool:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
                 return value
-    try:
-        value = bool(fn())
-    except Exception:
-        value = False
-    with _check_fn_cache_lock:
+        # Cache miss or expired — compute and store while holding the lock
+        # so concurrent callers wait rather than duplicate work.
+        try:
+            value = bool(fn())
+        except Exception:
+            value = False
         _check_fn_cache[fn] = (now, value)
-    return value
+        return value
 
 
 def invalidate_check_fn_cache() -> None:

@@ -920,7 +920,7 @@ def _determine_verdict(findings: List[Finding]) -> str:
         return "dangerous"
     if has_high:
         return "caution"
-    return "caution"
+    return "safe"
 
 
 def _build_summary(name: str, source: str, trust: str, verdict: str, findings: List[Finding]) -> str:

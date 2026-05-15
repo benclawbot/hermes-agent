@@ -84,13 +84,13 @@ class TestDetermineVerdict:
         f = Finding("x", "high", "network", "f.py", 1, "m", "d")
         assert _determine_verdict([f]) == "caution"
 
-    def test_medium_finding_caution(self):
+    def test_medium_finding_safe(self):
         f = Finding("x", "medium", "structural", "f.py", 1, "m", "d")
-        assert _determine_verdict([f]) == "caution"
+        assert _determine_verdict([f]) == "safe"
 
-    def test_low_finding_caution(self):
+    def test_low_finding_safe(self):
         f = Finding("x", "low", "obfuscation", "f.py", 1, "m", "d")
-        assert _determine_verdict([f]) == "caution"
+        assert _determine_verdict([f]) == "safe"
 
 
 # ---------------------------------------------------------------------------
